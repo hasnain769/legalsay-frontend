@@ -1,26 +1,82 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Premium Dark SaaS Palette */
+  --background: #020617;
+  /* Deepest Navy/Slate */
+  --foreground: #f8fafc;
+  /* Off-white */
+
+  --primary: #f8fafc;
+  --primary-foreground: #020617;
+
+  --secondary: #d4af37;
+  /* Gold */
+  --secondary-foreground: #020617;
+
+  --accent: #1e293b;
+  /* Slate 800 */
+  --accent-foreground: #f8fafc;
+
+  --muted: #94a3b8;
+  /* Slate 400 */
+  --muted-foreground: #64748b;
+  /* Slate 500 */
+
+  --card: #0f172a;
+  /* Slate 900 */
+  --card-foreground: #f8fafc;
+
+  --border: #1e293b;
+  /* Slate 800 */
+  --input: #1e293b;
+  --ring: #d4af37;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --font-sans: var(--font-sans);
+  --font-serif: var(--font-serif);
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans), sans-serif;
+}
+
+/* Glassmorphism Utilities */
+.glass-panel {
+  background: rgba(15, 23, 42, 0.6);
+  /* Semi-transparent Slate 900 */
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+
+.glass-panel:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+}
+
+/* Text Gradients */
+.text-gradient-gold {
+  background: linear-gradient(to right, #f8fafc, #d4af37);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
