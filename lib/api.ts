@@ -1,25 +1,8 @@
-const API_BASE_URL: string = (() => {
-    // Try common bundler/runtime env vars (Vite, Next, CRA, generic)
-    try {
-        const vite = (import.meta as any)?.env?.VITE_API_BASE_URL;
-        if (vite) return vite;
-    } catch { /* import.meta may not exist in some runtimes */ }
-
-    try {
-        const proc = (process as any)?.env;
-        if (proc?.NEXT_PUBLIC_API_BASE_URL) return proc.NEXT_PUBLIC_API_BASE_URL;
-        if (proc?.REACT_APP_API_BASE_URL) return proc.REACT_APP_API_BASE_URL;
-        if (proc?.API_BASE_URL) return proc.API_BASE_URL;
-    } catch { /* process may not exist in browser builds */ }
-
-    // Browser same-origin fallback
-    if (typeof window !== 'undefined' && window.location) {
-        return `${window.location.protocol}//${window.location.host}`;
-    }
-
-    // Last-resort default for local development
-    return 'http://localhost:8000';
-})();
+// Clean, standard environment variable check
+const API_BASE_URL: string = 
+  process.env.NEXT_PUBLIC_API_BASE_URL || // For Next.js
+  (import.meta as any).env?.VITE_API_BASE_URL ||   // For Vite
+  "https://api.legalsay.ai";              // Default / Fallback
 
 export interface KeyDetail {
     label: string;
@@ -38,7 +21,7 @@ export interface AnalysisResult {
 
 export async function analyzeContract(file: File | string, jurisdiction: string = "United States (General)"): Promise<AnalysisResult> {
     const formData = new FormData();
-
+    console.log(API_BASE_URL)
     if (typeof file === 'string') {
         formData.append('text', file);
     } else {
