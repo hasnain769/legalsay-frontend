@@ -18,6 +18,8 @@ interface ChatMessage {
     text: string;
 }
 
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "https://api.legalsay.ai";
+
 export default function NegotiationPage() {
     const router = useRouter();
     const [contractText, setContractText] = useState<string>("");
@@ -60,7 +62,7 @@ export default function NegotiationPage() {
                 const formData = new FormData();
                 formData.append('file', fileStore.file);
 
-                const res = await fetch('https//api.legalsay.ai/extract_text/', {
+                const res = await fetch(`${API_BASE_URL}/extract_text/`, {
                     method: 'POST',
                     body: formData
                 });
@@ -179,7 +181,7 @@ export default function NegotiationPage() {
         // Don't add message here - already added by toggleClauseSelection or handleChatSend
 
         try {
-            const response = await fetch('http//api.legalsay.ai/negotiate/chat/', {
+            const response = await fetch(`${API_BASE_URL}/negotiate/chat/`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
