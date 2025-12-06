@@ -4,6 +4,8 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { analyzeContract } from '@/lib/api';
 import Header from '@/components/Header';
+import { handleError, logError } from '@/lib/errorHandler';
+import { showToast } from '@/components/Toast';
 
 export default function Home() {
   const router = useRouter();
@@ -52,6 +54,8 @@ export default function Home() {
         }
       }
 
+      showToast('🔍 Our AI is diving deep into your contract...', 'info');
+
       // Pass jurisdiction to the analyzeContract function
       const result = await analyzeContract(fileToUpload!, jurisdiction);
 
@@ -65,10 +69,16 @@ export default function Home() {
       // Store result in localStorage for the report page
       localStorage.setItem('analysisResult', JSON.stringify(result));
 
-      router.push('/report');
+      showToast('✨ Analysis complete! Your insights are ready.', 'success');
+
+      // Small delay to show success message
+      setTimeout(() => {
+        router.push('/report');
+      }, 500);
     } catch (err: any) {
-      console.error("Analysis Error:", err);
-      setError(err.message || "An unexpected error occurred.");
+      logError('Analysis Error', err, { jurisdiction });
+      const errorMessage = handleError(err, 'Contract Analysis', false);
+      setError(errorMessage);
     } finally {
       setIsLoading(false);
     }

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, Playfair_Display } from "next/font/google";
 import "./globals.css";
+import { ToastContainer } from "@/components/Toast";
 
 const inter = Inter({
   variable: "--font-sans",
@@ -13,8 +14,8 @@ const playfair = Playfair_Display({
 });
 
 export const metadata: Metadata = {
-  title: "LegalSay - AI Contract Analysis",
-  description: "Premium AI-powered legal contract analysis.",
+  title: "LegalSay - AI-Powered Contract Analysis",
+  description: "Analyze contracts instantly with AI-powered insights",
 };
 
 export default function RootLayout({
@@ -23,11 +24,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en">
       <body
-        className={`${inter.variable} ${playfair.variable} antialiased bg-background text-foreground`}
+        className="antialiased"
       >
         {children}
+        <ToastContainer />
       </body>
     </html>
   );

@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { fileStore } from '@/lib/store';
 import { jsPDF } from 'jspdf';
 import { analyzeContract } from '@/lib/api';
+import { handleError, logError } from '@/lib/errorHandler';
+import { showToast } from '@/components/Toast';
 
 interface ClauseItem {
     id: number;
@@ -67,10 +69,17 @@ export default function NegotiationPage() {
                     body: formData
                 });
 
-                if (!res.ok) throw new Error("Failed to extract text");
+                if (!res.ok) {
+                    const errorText = await res.text().catch(() => 'Unknown error');
+                    throw new Error(errorText || "Failed to extract text");
+                }
 
                 const data = await res.json();
                 extractedText = data.text;
+
+                if (!extractedText || extractedText.trim().length === 0) {
+                    throw new Error("No text could be extracted from the file");
+                }
 
                 // Clean messy text
                 const lines = extractedText.split('\n');
@@ -82,8 +91,9 @@ export default function NegotiationPage() {
 
                 setContractText(extractedText);
             } catch (e) {
-                console.error("Extraction error:", e);
-                setContractText("Could not extract text from file.");
+                logError('Text Extraction', e, { fileName: fileStore.file?.name });
+                const errorMsg = handleError(e, 'Text Extraction');
+                setContractText("Could not extract text from file. " + errorMsg);
                 return;
             }
 
@@ -203,6 +213,7 @@ export default function NegotiationPage() {
             let agentResponse = "";
             let fullProposedEdit = "";
             let isEditMode = false;
+            let hasShownMessage = false; // Track if we've completed showing the message
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -215,15 +226,8 @@ export default function NegotiationPage() {
                     try {
                         const data = JSON.parse(line);
 
-                        if (data.type === 'edit_start') {
-                            isEditMode = true;
-                            fullProposedEdit = "";
-                            // Auto-switch to contract tab on mobile to show real-time updates
-                            setActiveTab('contract');
-                        } else if (data.type === 'edit_delta' && isEditMode) {
-                            fullProposedEdit += data.content;
-                            // STREAM UPDATE: Show real-time contract changes
-                            setContractText(fullProposedEdit);
+                        if (data.type === 'strategy') {
+                            // Strategy comes first - ignore for now or handle if needed
                         } else if (data.type === 'text_delta') {
                             agentResponse += data.content;
                             // Update agent message in real-time
@@ -236,6 +240,21 @@ export default function NegotiationPage() {
                                 }
                                 return newArr;
                             });
+                        } else if (data.type === 'edit_start') {
+                            // Message is complete, now we'll start showing edits
+                            if (!hasShownMessage) {
+                                hasShownMessage = true;
+                                // Wait a moment for user to see the message
+                                await new Promise(resolve => setTimeout(resolve, 1500));
+                                // NOW switch to contract tab to show real-time updates
+                                setActiveTab('contract');
+                            }
+                            isEditMode = true;
+                            fullProposedEdit = "";
+                        } else if (data.type === 'edit_delta' && isEditMode) {
+                            fullProposedEdit += data.content;
+                            // STREAM UPDATE: Show real-time contract changes
+                            setContractText(fullProposedEdit);
                         } else if (data.type === 'done') {
                             isEditMode = false;
                         }
@@ -245,8 +264,12 @@ export default function NegotiationPage() {
                 }
             }
         } catch (error) {
-            console.error("Negotiation error:", error);
-            setMessages(prev => [...prev, { role: 'agent', text: "Sorry, something went wrong." }]);
+            logError('Negotiation Processing', error);
+            const errorMsg = handleError(error, 'Negotiation');
+            setMessages(prev => [...prev, {
+                role: 'agent',
+                text: `❌ ${errorMsg}\n\nPlease try again or rephrase your request.`
+            }]);
         } finally {
             setIsProcessing(false);
         }
@@ -305,7 +328,13 @@ export default function NegotiationPage() {
     const handleReanalyze = async () => {
         if (!contractText || isReanalyzing) return;
 
+        if (!contractText.trim()) {
+            showToast('Contract text is empty. Cannot re-analyze.', 'warning');
+            return;
+        }
+
         setIsReanalyzing(true);
+        showToast('🔄 Re-analyzing with fresh AI insights...', 'info');
 
         try {
             // Create a new File object from contract text
@@ -313,20 +342,31 @@ export default function NegotiationPage() {
             const fileToAnalyze = new File([blob], 'contract.txt', { type: 'text/plain' });
 
             // Use the same analyzeContract function as the home page
-            const result = await analyzeContract(fileToAnalyze, fileStore.jurisdiction || 'California');
+            const result = await analyzeContract(fileToAnalyze, fileStore.jurisdiction || 'United States (General)');
+
+            if (!result) {
+                throw new Error('Analysis returned no results');
+            }
 
             // Update file store
             fileStore.file = fileToAnalyze;
-            fileStore.jurisdiction = fileStore.jurisdiction || 'California';
+            fileStore.jurisdiction = fileStore.jurisdiction || 'United States (General)';
 
             // Store result in localStorage for the report page
             localStorage.setItem('analysisResult', JSON.stringify(result));
 
-            // Navigate to report
-            router.push('/report');
+            showToast('✅ Fresh analysis ready! Redirecting to your report...', 'success');
+
+            // Small delay to show success message
+            setTimeout(() => {
+                router.push('/report');
+            }, 500);
         } catch (error) {
-            console.error('Re-analysis error:', error);
-            alert(`Failed to re-analyze contract: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            logError('Re-analysis Failed', error, {
+                jurisdiction: fileStore.jurisdiction,
+                textLength: contractText.length
+            });
+            handleError(error, 'Re-analysis');
         } finally {
             setIsReanalyzing(false);
         }
