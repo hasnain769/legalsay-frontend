@@ -60,7 +60,7 @@ export default function NegotiationPage() {
                 const formData = new FormData();
                 formData.append('file', fileStore.file);
 
-                const res = await fetch('http://localhost:8000/extract_text/', {
+                const res = await fetch('https//api.legalsay.ai/extract_text/', {
                     method: 'POST',
                     body: formData
                 });
@@ -179,7 +179,7 @@ export default function NegotiationPage() {
         // Don't add message here - already added by toggleClauseSelection or handleChatSend
 
         try {
-            const response = await fetch('http://localhost:8000/negotiate/chat/', {
+            const response = await fetch('http//api.legalsay.ai/negotiate/chat/', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
