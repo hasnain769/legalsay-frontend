@@ -554,7 +554,7 @@ export default function NegotiationPage() {
             </div>
 
             {/* Mobile/Tablet View - visible on md and below */}
-            <div className="lg:hidden flex flex-col h-screen bg-[#0a0f1c] text-white">
+            <div className="lg:hidden fixed inset-0 flex flex-col bg-[#0a0f1c] text-white">
                 {/* Header */}
                 <div className="p-4 border-b border-white/10 flex-shrink-0">
                     <div className="flex items-center gap-3">
