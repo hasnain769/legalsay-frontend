@@ -361,50 +361,83 @@ export default function NegotiationPage() {
         }
     };
 
-    // Highlight selected clauses and all flagged clauses in document
+    // Helper to create a flexible regex pattern from clause text (allows whitespace variations)
+    const createFlexiblePattern = (text: string): RegExp => {
+        // Escape special regex characters
+        const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        // Replace any whitespace sequence with flexible whitespace matcher
+        const flexible = escaped.replace(/\s+/g, '\\s+');
+        return new RegExp(flexible, 'i'); // Case insensitive
+    };
+
     const highlightedText = () => {
-        let result: React.ReactNode[] = [contractText];
+        if (clauses.length === 0) return contractText;
 
-        // Highlight all clauses with appropriate colors based on risk level
-        clauses.forEach((clause, idx) => {
-            const newResult: React.ReactNode[] = [];
+        // Create segments with their positions and highlighting info
+        const segments: Array<{ start: number; end: number; clauseIdx?: number }> = [];
 
-            result.forEach((segment) => {
-                if (typeof segment === 'string') {
-                    const parts = segment.split(clause.original_text);
-                    if (parts.length >= 2) {
-                        // Determine background color based on risk level and selection
-                        let bgClass = '';
-                        if (selectedClauseIds.includes(clause.id)) {
-                            bgClass = 'bg-blue-500/40 border-2 border-blue-400'; // Selected (blue)
-                        } else if (clause.riskLevel === 'high') {
-                            bgClass = 'bg-red-500/20'; // Red flag
-                        } else if (clause.riskLevel === 'medium') {
-                            bgClass = 'bg-yellow-500/20'; // Yellow flag
-                        } else {
-                            bgClass = 'bg-green-500/20'; // Green flag
-                        }
+        // Find all clause matches in the contract
+        clauses.forEach((clause, clauseIdx) => {
+            if (!clause.original_text || clause.original_text === 'N/A') return;
 
-                        newResult.push(parts[0]);
-                        newResult.push(
-                            <span
-                                key={`clause-${idx}`}
-                                className={`${bgClass} text-white px-1 rounded transition-all`}
-                            >
-                                {clause.original_text}
-                            </span>
-                        );
-                        newResult.push(parts.slice(1).join(clause.original_text));
-                    } else {
-                        newResult.push(segment);
-                    }
-                } else {
-                    newResult.push(segment);
-                }
-            });
+            const pattern = createFlexiblePattern(clause.original_text);
+            const match = contractText.match(pattern);
 
-            result = newResult;
+            if (match && match.index !== undefined) {
+                segments.push({
+                    start: match.index,
+                    end: match.index + match[0].length,
+                    clauseIdx
+                });
+            }
         });
+
+        // Sort segments by start position
+        segments.sort((a, b) => a.start - b.start);
+
+        // Build result with highlights
+        const result: React.ReactNode[] = [];
+        let lastEnd = 0;
+
+        segments.forEach((segment, segmentIdx) => {
+            // Add text before this highlight
+            if (segment.start > lastEnd) {
+                result.push(contractText.substring(lastEnd, segment.start));
+            }
+
+            // Add highlighted text
+            if (segment.clauseIdx !== undefined) {
+                const clause = clauses[segment.clauseIdx];
+
+                // Determine background color
+                let bgClass = '';
+                if (selectedClauseIds.includes(clause.id)) {
+                    bgClass = 'bg-blue-500/40 border-2 border-blue-400';
+                } else if (clause.riskLevel === 'high') {
+                    bgClass = 'bg-red-500/20';
+                } else if (clause.riskLevel === 'medium') {
+                    bgClass = 'bg-yellow-500/20';
+                } else {
+                    bgClass = 'bg-green-500/20';
+                }
+
+                result.push(
+                    <span
+                        key={`clause-${segment.clauseIdx}-${segmentIdx}`}
+                        className={`${bgClass} text-white px-1 rounded transition-all`}
+                    >
+                        {contractText.substring(segment.start, segment.end)}
+                    </span>
+                );
+            }
+
+            lastEnd = segment.end;
+        });
+
+        // Add remaining text
+        if (lastEnd < contractText.length) {
+            result.push(contractText.substring(lastEnd));
+        }
 
         return <>{result}</>;
     };
