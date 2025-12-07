@@ -1,10 +1,15 @@
 import { ApiError, logError } from './errorHandler';
 
-// Clean, standard environment variable check
+// Centralized API Base URL Configuration
+// Uses localhost in development, production URL otherwise
 const API_BASE_URL: string =
-    process.env.NEXT_PUBLIC_API_BASE_URL || // For Next.js
-    (import.meta as any).env?.VITE_API_BASE_URL ||   // For Vite
-    "https://api.legalsay.ai";              // Default / Fallback
+    process.env.NEXT_PUBLIC_API_BASE_URL ||
+    (typeof window !== 'undefined' && window.location.hostname === 'localhost'
+        ? "http://localhost:8000"
+        : "https://api.legalsay.ai");
+
+// Export for use in components if needed
+export { API_BASE_URL };
 
 // API timeout in milliseconds
 const API_TIMEOUT = 60000; // 60 seconds for AI processing
@@ -14,12 +19,18 @@ export interface KeyDetail {
     value: string;
 }
 
+export interface FlagWithText {
+    analysis: string;
+    original_text: string;
+}
+
 export interface AnalysisResult {
     contract_type: string;
-    key_details: KeyDetail[];
-    red_flags: string[];
-    yellow_flags: string[];
-    green_flags: string[];
+    jurisdiction: string;
+    key_details: Array<{ label: string; value: string }>;
+    red_flags: FlagWithText[];
+    yellow_flags: FlagWithText[];
+    green_flags: FlagWithText[];
     plain_english_summary: string;
     total_health_score: number;
 }
@@ -59,7 +70,7 @@ export async function checkApiHealth(): Promise<boolean> {
     }
 }
 
-export async function analyzeContract(file: File | string, jurisdiction: string = "United States (General)"): Promise<AnalysisResult> {
+export async function analyzeContract(file: File | string): Promise<AnalysisResult> {
     const formData = new FormData();
 
     if (typeof file === 'string') {
@@ -77,7 +88,6 @@ export async function analyzeContract(file: File | string, jurisdiction: string 
         formData.append('file', file);
     }
 
-    formData.append('jurisdiction', jurisdiction);
 
     try {
         const response = await fetchWithTimeout(`${API_BASE_URL}/analyze_contract/`, {
@@ -200,3 +210,81 @@ export async function redlineClause(file: File, originalText: string, jurisdicti
     }
 }
 
+/**
+ * Extract text from a file
+ */
+export async function extractText(file: File): Promise<string> {
+    if (!file || file.size === 0) {
+        throw new ApiError('Valid file is required for text extraction', 400);
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const response = await fetchWithTimeout(`${API_BASE_URL}/extract_text/`, {
+            method: 'POST',
+            body: formData,
+        }, 30000); // 30 second timeout
+
+        if (!response.ok) {
+            const errorText = await response.text().catch(() => 'Unknown error');
+            throw new ApiError(errorText || 'Failed to extract text', response.status);
+        }
+
+        const data = await response.json();
+
+        if (!data.text || data.text.trim().length === 0) {
+            throw new ApiError('No text could be extracted from the file', 500);
+        }
+
+        return data.text;
+    } catch (error) {
+        if (error instanceof ApiError) throw error;
+        throw new ApiError('Failed to extract text. Please try again.', 500);
+    }
+}
+
+/**
+ * Negotiation chat payload
+ */
+export interface NegotiationPayload {
+    message: string;
+    contract_context: string;
+    jurisdiction: string;
+    analysis_context?: any;
+    selected_clause?: string;
+    history?: Array<{ role: string; content: string }>;
+}
+
+/**
+ * Negotiate chat - returns raw Response for streaming
+ */
+export async function negotiateChat(payload: NegotiationPayload): Promise<Response> {
+    if (!payload.message.trim()) {
+        throw new ApiError('Message cannot be empty', 400);
+    }
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/negotiate/chat/`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) {
+            throw new ApiError('Negotiation failed', response.status);
+        }
+
+        return response;
+    } catch (error) {
+        if (error instanceof ApiError) throw error;
+        if (error instanceof Error && error.message.includes('Failed to fetch')) {
+            throw new ApiError(
+                `Cannot connect to server at ${API_BASE_URL}. Please check your connection.`,
+                0
+            );
+        }
+        throw new ApiError('Failed to process negotiation. Please try again.', 500);
+    }
+}

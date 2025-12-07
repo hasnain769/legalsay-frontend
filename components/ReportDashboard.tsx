@@ -5,13 +5,13 @@ import { Card, Badge, HealthGauge } from '@/components/ui/components';
 import { useState } from 'react';
 
 import { useRouter } from 'next/navigation';
-import { fileStore } from '@/lib/store';
 
 export default function ReportDashboard({ data, originalFile, jurisdiction }: { data: AnalysisResult, originalFile: File | null, jurisdiction: string }) {
     const router = useRouter();
     const [activeTab, setActiveTab] = useState<'risks' | 'details'>('risks');
     const [explainingRiskId, setExplainingRiskId] = useState<number | null>(null);
     const [explanations, setExplanations] = useState<Record<number, string>>({});
+    const [showOriginalText, setShowOriginalText] = useState(false); // Toggle for original text
 
     // Negotiation List State
     const [negotiationList, setNegotiationList] = useState<{ text: string, type: string }[]>([]);
@@ -43,22 +43,31 @@ export default function ReportDashboard({ data, originalFile, jurisdiction }: { 
     };
 
     const handleDraftNegotiation = () => {
-        // Collect all red and yellow flags automatically
-        const risksToNegotiate = [
-            ...(data.red_flags || []).map(f => ({ text: f, type: 'high' })),
-            ...(data.yellow_flags || []).map(f => ({ text: f, type: 'medium' })),
-        ];
-
-        // Save to store
-        fileStore.negotiationList = risksToNegotiate;
-        // Navigate
+        // Navigate to negotiation - it will read flags directly from Zustand store
         router.push('/negotiation');
     };
 
+
     const allFlags = [
-        ...(data.red_flags || []).map(f => ({ type: 'red', text: f })),
-        ...(data.yellow_flags || []).map(f => ({ type: 'yellow', text: f })),
-        ...(data.green_flags || []).map(f => ({ type: 'green', text: f })),
+        ...(data.red_flags || []).map(f => {
+            // Handle both old string format and new object format
+            if (typeof f === 'string') {
+                return { type: 'red' as const, analysis: f, original_text: 'N/A' };
+            }
+            return { type: 'red' as const, analysis: f.analysis, original_text: f.original_text };
+        }),
+        ...(data.yellow_flags || []).map(f => {
+            if (typeof f === 'string') {
+                return { type: 'yellow' as const, analysis: f, original_text: 'N/A' };
+            }
+            return { type: 'yellow' as const, analysis: f.analysis, original_text: f.original_text };
+        }),
+        ...(data.green_flags || []).map(f => {
+            if (typeof f === 'string') {
+                return { type: 'green' as const, analysis: f, original_text: 'N/A' };
+            }
+            return { type: 'green' as const, analysis: f.analysis, original_text: f.original_text };
+        }),
     ];
 
     return (
@@ -87,7 +96,18 @@ export default function ReportDashboard({ data, originalFile, jurisdiction }: { 
                             <Badge variant="default">Contract Analysis</Badge>
                             <span className="text-xs text-muted-foreground uppercase tracking-widest">AI Generated</span>
                         </div>
-                        <h1 className="text-5xl font-serif font-bold text-gradient-gold mb-6">{data.contract_type}</h1>
+                        <h1 className="text-5xl font-serif font-bold text-gradient-gold mb-4">{data.contract_type}</h1>
+
+                        {/* Jurisdiction Display */}
+                        <div className="flex items-center gap-2 mb-6">
+                            <svg className="w-4 h-4 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3" />
+                            </svg>
+                            <span className="text-sm font-medium text-muted-foreground">
+                                Jurisdiction: <span className="text-foreground">{jurisdiction}</span>
+                            </span>
+                        </div>
+
                         <p className="text-lg text-muted-foreground leading-relaxed max-w-2xl">
                             {data.plain_english_summary}
                         </p>
@@ -113,26 +133,48 @@ export default function ReportDashboard({ data, originalFile, jurisdiction }: { 
 
                 {/* Left Column: Action Center (Flags) */}
                 <div className="lg:col-span-2 space-y-8">
-                    <div className="flex items-center justify-between border-b border-white/5 pb-4">
-                        <h2 className="text-2xl font-serif font-bold text-foreground flex items-center gap-3">
+                    <div className="space-y-4">
+                        <h2 className="text-2xl font-serif font-bold text-foreground">
                             Action Center
                         </h2>
-                        <div className="flex p-1 bg-white/5 rounded-full">
-                            <button
-                                onClick={() => setActiveTab('risks')}
-                                className={`px-6 py-2 text-sm font-medium rounded-full transition-all duration-300 ${activeTab === 'risks' ? 'bg-primary text-primary-foreground shadow-lg' : 'text-muted-foreground hover:text-foreground'}`}
-                            >
-                                Risks
-                            </button>
-                            <button
-                                onClick={() => setActiveTab('details')}
-                                className={`px-6 py-2 text-sm font-medium rounded-full transition-all duration-300 ${activeTab === 'details' ? 'bg-primary text-primary-foreground shadow-lg' : 'text-muted-foreground hover:text-foreground'}`}
-                            >
-                                Details
-                            </button>
+
+                        <div className="flex items-center justify-between flex-wrap gap-3">
+                            {/* Risks/Details Tabs */}
+                            <div className="flex p-1 bg-white/5 rounded-full">
+                                <button
+                                    onClick={() => setActiveTab('risks')}
+                                    className={`px-6 py-2 text-sm font-medium rounded-full transition-all duration-300 ${activeTab === 'risks' ? 'bg-primary text-primary-foreground shadow-lg' : 'text-muted-foreground hover:text-foreground'}`}
+                                >
+                                    Risks
+                                </button>
+                                <button
+                                    onClick={() => setActiveTab('details')}
+                                    className={`px-6 py-2 text-sm font-medium rounded-full transition-all duration-300 ${activeTab === 'details' ? 'bg-primary text-primary-foreground shadow-lg' : 'text-muted-foreground hover:text-foreground'}`}
+                                >
+                                    Details
+                                </button>
+                            </div>
+
+                            {/* Toggle between AI Analysis and Original Text - only show on Risks tab */}
+                            {activeTab === 'risks' && (
+                                <div className="flex p-1 bg-white/5 rounded-full">
+                                    <button
+                                        onClick={() => setShowOriginalText(false)}
+                                        className={`px-4 py-1.5 text-xs font-medium rounded-full transition-all duration-300 ${!showOriginalText ? 'bg-primary text-primary-foreground shadow-lg' : 'text-muted-foreground hover:text-foreground'}`}
+                                    >
+                                        AI Analysis
+                                    </button>
+                                    <button
+                                        onClick={() => setShowOriginalText(true)}
+                                        className={`px-4 py-1.5 text-xs font-medium rounded-full transition-all duration-300 ${showOriginalText ? 'bg-primary text-primary-foreground shadow-lg' : 'text-muted-foreground hover:text-foreground'}`}
+                                    >
+                                        Actual Text
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     </div>
-
+                    {/* Missing div tag added here */}
                     <div className="space-y-5">
                         {activeTab === 'risks' && (
                             <>
@@ -142,7 +184,7 @@ export default function ReportDashboard({ data, originalFile, jurisdiction }: { 
                                     </div>
                                 )}
                                 {allFlags.map((flag, idx) => {
-                                    const isSelected = negotiationList.some(item => item.text === flag.text);
+                                    const isSelected = negotiationList.some(item => item.text === flag.analysis);
                                     return (
                                         <Card key={idx} className={`p-6 group transition-all duration-300 border-white/5 hover:border-white/10 ${isSelected ? 'bg-secondary/10 border-secondary/50' : 'hover:bg-white/10'}`}>
                                             <div className="flex items-start gap-5">
@@ -150,7 +192,9 @@ export default function ReportDashboard({ data, originalFile, jurisdiction }: { 
                                                     }`} />
                                                 <div className="flex-1 space-y-4">
                                                     <div className="flex justify-between items-start gap-4">
-                                                        <p className="text-foreground/90 font-medium leading-relaxed text-lg">{flag.text}</p>
+                                                        <p className="text-foreground/90 font-medium leading-relaxed text-lg">
+                                                            {showOriginalText ? flag.original_text : flag.analysis}
+                                                        </p>
                                                         <Badge variant={flag.type as any}>{flag.type.toUpperCase()}</Badge>
                                                     </div>
 
@@ -159,7 +203,7 @@ export default function ReportDashboard({ data, originalFile, jurisdiction }: { 
                                                         <div className="flex flex-col gap-4 pt-2">
                                                             <div className="flex gap-4">
                                                                 <button
-                                                                    onClick={() => handleExplain(flag.text, idx)}
+                                                                    onClick={() => handleExplain(flag.analysis, idx)}
                                                                     disabled={explainingRiskId === idx}
                                                                     className="text-xs font-semibold text-primary/80 hover:text-secondary transition-colors flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/5 border border-transparent hover:border-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
                                                                 >

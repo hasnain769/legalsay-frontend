@@ -3,5 +3,5 @@
 export const fileStore = {
     file: null as File | null,
     jurisdiction: "United States (General)" as string,
-    negotiationList: [] as { text: string, type: string }[]
+    negotiationList: [] as { text: string, original_text: string, type: string }[]
 };

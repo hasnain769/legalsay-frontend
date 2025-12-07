@@ -2,16 +2,18 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { fileStore } from '@/lib/store';
+import { useContractStore } from '@/lib/contract-store';
+import { cleanPdfText } from '@/lib/textUtils';
 import { jsPDF } from 'jspdf';
-import { analyzeContract } from '@/lib/api';
+import { analyzeContract, negotiateChat, NegotiationPayload } from '@/lib/api';
 import { handleError, logError } from '@/lib/errorHandler';
 import { showToast } from '@/components/Toast';
 
 interface ClauseItem {
-    id: number;
+    id: string; // Changed to string to match flag IDs
     title: string;
     text: string;
+    original_text: string;
     riskLevel: 'high' | 'medium' | 'low';
 }
 
@@ -20,13 +22,13 @@ interface ChatMessage {
     text: string;
 }
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "https://api.legalsay.ai";
+
 
 export default function NegotiationPage() {
     const router = useRouter();
     const [contractText, setContractText] = useState<string>("");
     const [clauses, setClauses] = useState<ClauseItem[]>([]);
-    const [selectedClauseIds, setSelectedClauseIds] = useState<number[]>([]);
+    const [selectedClauseIds, setSelectedClauseIds] = useState<string[]>([]);
     const [isProcessing, setIsProcessing] = useState(false);
     const [isReanalyzing, setIsReanalyzing] = useState(false);
     const [analysisResults, setAnalysisResults] = useState<any>(null);
@@ -38,82 +40,59 @@ export default function NegotiationPage() {
     const [chatInput, setChatInput] = useState("");
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const chatEndRef = useRef<HTMLDivElement>(null);
-    const announcedClausesRef = useRef<Set<number>>(new Set()); // Track announced clauses
+    const announcedClausesRef = useRef<Set<string>>(new Set()); // Track announced clauses
+
+    // Zustand store
+    const { contractContent, flags, analysisResult, jurisdiction, removeNegotiatedClause, updateContractContent } = useContractStore();
+
+    // Track if Zustand has hydrated from localStorage
+    const [hasHydrated, setHasHydrated] = useState(false);
+
+    // Wait for Zustand to hydrate
+    useEffect(() => {
+        setHasHydrated(true);
+    }, []);
+
 
     // Auto-scroll chat
     useEffect(() => {
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages]);
 
-    // Load contract and convert negotiation items to clauses
+    // Load contract and convert flags to clauses
     useEffect(() => {
-        const loadFile = async () => {
-            if (!fileStore.file) {
-                router.push('/');
-                return;
-            }
+        // Don't check until Zustand has hydrated from localStorage
+        if (!hasHydrated) return;
 
-            // Load analysis results from localStorage
-            const storedAnalysis = localStorage.getItem('analysisResult');
-            if (storedAnalysis) {
-                setAnalysisResults(JSON.parse(storedAnalysis));
-            }
+        // Load contract content from store
+        if (contractContent) {
+            // Clean the text (in case it wasn't cleaned during upload)
+            const cleanedText = cleanPdfText(contractContent);
+            setContractText(cleanedText);
+        } else {
+            router.push('/'); // Redirect if no contract
+            return;
+        }
 
-            let extractedText = "";
-            try {
-                const formData = new FormData();
-                formData.append('file', fileStore.file);
+        // Load analysis results
+        if (analysisResult) {
+            setAnalysisResults(analysisResult);
+        }
 
-                const res = await fetch(`${API_BASE_URL}/extract_text/`, {
-                    method: 'POST',
-                    body: formData
-                });
-
-                if (!res.ok) {
-                    const errorText = await res.text().catch(() => 'Unknown error');
-                    throw new Error(errorText || "Failed to extract text");
-                }
-
-                const data = await res.json();
-                extractedText = data.text;
-
-                if (!extractedText || extractedText.trim().length === 0) {
-                    throw new Error("No text could be extracted from the file");
-                }
-
-                // Clean messy text
-                const lines = extractedText.split('\n');
-                const singleWordLines = lines.filter(l => l.trim().split(' ').length === 1 && l.trim().length > 0).length;
-                if (singleWordLines / lines.length > 0.3) {
-                    extractedText = extractedText.replace(/([^\n])\n\n([^\n])/g, '$1 $2');
-                    extractedText = extractedText.replace(/([^\n])\n([^\n])/g, '$1 $2');
-                }
-
-                setContractText(extractedText);
-            } catch (e) {
-                logError('Text Extraction', e, { fileName: fileStore.file?.name });
-                const errorMsg = handleError(e, 'Text Extraction');
-                setContractText("Could not extract text from file. " + errorMsg);
-                return;
-            }
-
-            // Convert negotiation list to clauses
-            if (fileStore.negotiationList.length > 0) {
-                const clauseItems: ClauseItem[] = fileStore.negotiationList.map((item, idx) => ({
-                    id: idx + 1,
-                    title: item.text.split(':')[0] || `Clause ${idx + 1}`,
-                    text: item.text,
-                    riskLevel: item.type === 'high' ? 'high' : item.type === 'medium' ? 'medium' : 'low'
-                }));
-                setClauses(clauseItems);
-            }
-        };
-
-        loadFile();
-    }, []);
+        // Convert flags to clauses (only red and yellow flags for negotiation)
+        const redAndYellowFlags = flags.filter(f => f.type === 'red' || f.type === 'yellow');
+        const clauseItems: ClauseItem[] = redAndYellowFlags.map((flag) => ({
+            id: flag.id,
+            title: flag.analysis.substring(0, 50) + '...',
+            text: flag.analysis,
+            original_text: flag.original_text,
+            riskLevel: flag.type === 'red' ? 'high' : 'medium',
+        }));
+        setClauses(clauseItems);
+    }, [contractContent, flags, analysisResult, router, hasHydrated]);
 
     // Toggle clause selection
-    const toggleClauseSelection = (clauseId: number) => {
+    const toggleClauseSelection = (clauseId: string) => {
         setSelectedClauseIds(prev => {
             const isCurrentlySelected = prev.includes(clauseId);
 
@@ -126,7 +105,7 @@ export default function NegotiationPage() {
                 if (clause) {
                     setMessages(prevMessages =>
                         prevMessages.filter(msg =>
-                            msg.text !== `📌 Selected: ${clause.title}`
+                            msg.text !== `📌 Selected: ${clause.title} `
                         )
                     );
                 }
@@ -140,7 +119,7 @@ export default function NegotiationPage() {
                         announcedClausesRef.current.add(clauseId);
                         setMessages(prevMessages => [...prevMessages, {
                             role: 'user',
-                            text: `📌 Selected: ${clause.title}`
+                            text: `📌 Selected: ${clause.title} `
                         }]);
                     }
                 }
@@ -150,7 +129,7 @@ export default function NegotiationPage() {
     };
 
     // Process single clause
-    const processClause = async (clauseId: number) => {
+    const processClause = async (clauseId: string) => {
         const clause = clauses.find(c => c.id === clauseId);
         if (!clause) return;
 
@@ -163,6 +142,9 @@ export default function NegotiationPage() {
 
         // Remove from clause list after negotiation
         setClauses(prev => prev.filter(c => c.id !== clauseId));
+
+        // Remove from Zustand store
+        removeNegotiatedClause(clauseId);
 
         // Remove from announced tracking
         announcedClausesRef.current.delete(clauseId);
@@ -180,6 +162,9 @@ export default function NegotiationPage() {
         // Remove all selected clauses from list after negotiation
         setClauses(prev => prev.filter(c => !selectedClauseIds.includes(c.id)));
 
+        // Remove from Zustand store
+        selectedClauseIds.forEach(id => removeNegotiatedClause(id));
+
         // Clear selection and tracking
         selectedClauseIds.forEach(id => announcedClausesRef.current.delete(id));
         setSelectedClauseIds([]);
@@ -191,20 +176,16 @@ export default function NegotiationPage() {
         // Don't add message here - already added by toggleClauseSelection or handleChatSend
 
         try {
-            const response = await fetch(`${API_BASE_URL}/negotiate/chat/`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    message: message,
-                    contract_context: contractText,
-                    jurisdiction: fileStore.jurisdiction,
-                    analysis_context: analysisResults || {},
-                    selected_clause: clauses.map(c => c.text).join('\n\n'),
-                    history: messages.map(m => ({ role: m.role, content: m.text }))
-                })
-            });
+            const payload: NegotiationPayload = {
+                message: message,
+                contract_context: contractText,
+                jurisdiction: jurisdiction || 'United States (General)',
+                analysis_context: analysisResults || {},
+                selected_clause: clauses.map(c => c.text).join('\n\n'),
+                history: messages.map(m => ({ role: m.role, content: m.text }))
+            };
 
-            if (!response.ok) throw new Error("Negotiation failed");
+            const response = await negotiateChat(payload);
             if (!response.body) throw new Error("No response body");
 
             const reader = response.body.getReader();
@@ -268,7 +249,7 @@ export default function NegotiationPage() {
             const errorMsg = handleError(error, 'Negotiation');
             setMessages(prev => [...prev, {
                 role: 'agent',
-                text: `❌ ${errorMsg}\n\nPlease try again or rephrase your request.`
+                text: `❌ ${errorMsg} \n\nPlease try again or rephrase your request.`
             }]);
         } finally {
             setIsProcessing(false);
@@ -301,7 +282,7 @@ export default function NegotiationPage() {
         // Add date
         doc.setFontSize(10);
         doc.setFont('helvetica', 'normal');
-        doc.text(`Generated: ${new Date().toLocaleDateString()}`, margin, margin + 10);
+        doc.text(`Generated: ${new Date().toLocaleDateString()} `, margin, margin + 10);
 
         // Add contract content
         doc.setFontSize(11);
@@ -342,18 +323,16 @@ export default function NegotiationPage() {
             const fileToAnalyze = new File([blob], 'contract.txt', { type: 'text/plain' });
 
             // Use the same analyzeContract function as the home page
-            const result = await analyzeContract(fileToAnalyze, fileStore.jurisdiction || 'United States (General)');
+            const result = await analyzeContract(fileToAnalyze);
 
             if (!result) {
                 throw new Error('Analysis returned no results');
             }
 
-            // Update file store
-            fileStore.file = fileToAnalyze;
-            fileStore.jurisdiction = fileStore.jurisdiction || 'United States (General)';
-
-            // Store result in localStorage for the report page
-            localStorage.setItem('analysisResult', JSON.stringify(result));
+            // Update Zustand store with new analysis
+            const { setContract, setAnalysis } = useContractStore.getState();
+            setContract(fileToAnalyze, contractText);
+            setAnalysis(result);
 
             showToast('✅ Fresh analysis ready! Redirecting to your report...', 'success');
 
@@ -363,7 +342,7 @@ export default function NegotiationPage() {
             }, 500);
         } catch (error) {
             logError('Re-analysis Failed', error, {
-                jurisdiction: fileStore.jurisdiction,
+                jurisdiction: jurisdiction || 'United States (General)',
                 textLength: contractText.length
             });
             handleError(error, 'Re-analysis');
@@ -382,215 +361,274 @@ export default function NegotiationPage() {
         }
     };
 
-    // Highlight selected clauses in document
+    // Highlight selected clauses and all flagged clauses in document
     const highlightedText = () => {
-        if (selectedClauseIds.length === 0) return contractText;
+        let result: React.ReactNode[] = [contractText];
 
-        const selectedClauses = clauses.filter(c => selectedClauseIds.includes(c.id));
-        let highlightedContract: React.ReactNode = contractText;
+        // Highlight all clauses with appropriate colors based on risk level
+        clauses.forEach((clause, idx) => {
+            const newResult: React.ReactNode[] = [];
 
-        selectedClauses.forEach(clause => {
-            const parts = String(highlightedContract).split(clause.text);
-            if (parts.length >= 2) {
-                highlightedContract = (
-                    <>
-                        {parts[0]}
-                        <span className="bg-red-500/30 text-white px-1 rounded">{clause.text}</span>
-                        {parts.slice(1).join(clause.text)}
-                    </>
-                );
-            }
+            result.forEach((segment) => {
+                if (typeof segment === 'string') {
+                    const parts = segment.split(clause.original_text);
+                    if (parts.length >= 2) {
+                        // Determine background color based on risk level and selection
+                        let bgClass = '';
+                        if (selectedClauseIds.includes(clause.id)) {
+                            bgClass = 'bg-blue-500/40 border-2 border-blue-400'; // Selected (blue)
+                        } else if (clause.riskLevel === 'high') {
+                            bgClass = 'bg-red-500/20'; // Red flag
+                        } else if (clause.riskLevel === 'medium') {
+                            bgClass = 'bg-yellow-500/20'; // Yellow flag
+                        } else {
+                            bgClass = 'bg-green-500/20'; // Green flag
+                        }
+
+                        newResult.push(parts[0]);
+                        newResult.push(
+                            <span
+                                key={`clause-${idx}`}
+                                className={`${bgClass} text-white px-1 rounded transition-all`}
+                            >
+                                {clause.original_text}
+                            </span>
+                        );
+                        newResult.push(parts.slice(1).join(clause.original_text));
+                    } else {
+                        newResult.push(segment);
+                    }
+                } else {
+                    newResult.push(segment);
+                }
+            });
+
+            result = newResult;
         });
 
-        return highlightedContract;
+        return <>{result}</>;
     };
+
+
+    // Copilot expansion state
+    const [isCopilotExpanded, setIsCopilotExpanded] = useState(false);
 
     return (
         <>
-            {/* Desktop View (3 columns) - hidden on mobile/tablet */}
-            <div className="hidden lg:flex h-screen bg-[#0a0f1c] text-white overflow-hidden">
-                {/* Left Panel - Clause Analysis */}
-                <div className="w-72 bg-[#13151f] border-r border-white/10 flex flex-col h-full">
-                    <div className="p-4 border-b border-white/10 flex-shrink-0">
-                        <div className="flex items-center gap-3 mb-3">
-                            <img src="/logo.png" alt="LegalSay" className="w-8 h-8" />
-                            <h2 className="text-sm font-bold uppercase tracking-wider text-white">Negotiation</h2>
-                        </div>
-                        <p className="text-[10px] text-white/40 uppercase tracking-wide">
-                            {clauses.length} Clauses • {selectedClauseIds.length} Selected
-                        </p>
+            {/* Desktop View (Two Equal Panels + Bottom Copilot) - hidden on mobile/tablet */}
+            <div className="hidden lg:flex h-screen bg-[#0a0f1c] text-white overflow-hidden flex-col">
+                {/* Top Header */}
+                <div className="w-full bg-[#13151f] border-b border-white/20 p-4 flex items-center justify-between flex-shrink-0">
+                    <div className="flex items-center gap-4">
+                        <img src="/logo.png" alt="LegalSay" className="w-10 h-10" />
+                        <div className="h-6 w-px bg-white/20"></div>
+                        <h1 className="text-lg font-semibold text-white">Playground</h1>
                     </div>
-
-                    <div className="flex-1 overflow-y-auto p-2">
-                        {clauses.map((clause) => (
-                            <div key={clause.id} className="mb-2">
-                                <button
-                                    onClick={() => toggleClauseSelection(clause.id)}
-                                    className={`w-full flex items-center gap-3 p-3 rounded-lg transition-all hover:bg-white/5 ${selectedClauseIds.includes(clause.id) ? 'bg-red-500/20 border border-red-500/50' : 'border border-transparent'
-                                        }`}
-                                >
-                                    <div className={`w-2 h-2 rounded-full flex-shrink-0 ${getRiskColor(clause.riskLevel)}`}></div>
-                                    <span className="flex-1 text-left text-xs text-white/90">{clause.id}. {clause.title}</span>
-                                    {selectedClauseIds.includes(clause.id) && (
-                                        <svg className="w-4 h-4 text-red-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                                            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"></path>
-                                        </svg>
-                                    )}
-                                </button>
-
-                                {/* Individual Negotiate Button */}
-                                <button
-                                    onClick={() => toggleClauseSelection(clause.id)}
-                                    className={`w-full mt-1 ${selectedClauseIds.includes(clause.id)
-                                        ? 'bg-[#d4af37] text-[#0a0f1c] border border-[#d4af37]'
-                                        : 'bg-blue-500/20 border border-blue-500/50 text-blue-400'
-                                        } py-2 px-3 rounded-lg text-[10px] font-semibold hover:opacity-80 transition-all flex items-center justify-center gap-1`}
-                                >
-                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
-                                    </svg>
-                                    {selectedClauseIds.includes(clause.id) ? 'Selected' : 'Negotiate'}
-                                </button>
-                            </div>
-                        ))}
-                    </div>
+                    <button
+                        className="px-4 py-2 bg-white/5 hover:bg-white/10 text-white/70 hover:text-white rounded-lg text-sm font-medium transition-all flex items-center gap-2"
+                    >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path>
+                        </svg>
+                        Dashboard
+                    </button>
                 </div>
 
-                {/* Center Panel - Document */}
-                <div className="flex-1 flex flex-col bg-[#0a0f1c] h-full">
-                    <div className="border-b border-white/10 p-4 flex items-center justify-between flex-shrink-0">
-                        <div className="flex items-center gap-2">
-                            <svg className="w-5 h-5 text-white/50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                            </svg>
-                            <span className="text-sm text-white/70">CONTRACT (Live Updates)</span>
+                {/* Top Section - Two Equal Panels */}
+                <div className="flex flex-1 overflow-hidden">
+                    {/* Left Panel - Flagged Clauses (50%) */}
+                    <div className="w-1/2 bg-[#13151f] border-r border-white/20 flex flex-col">
+                        <div className="p-4  border-white/20 flex-shrink-0">
+                            <h2 className="text-base font-semibold text-white mb-2">Flagged Clauses</h2>
+                            <p className="text-xs text-white/50">
+                                {clauses.length} total • {selectedClauseIds.length} selected
+                            </p>
                         </div>
-                        <div className="flex items-center gap-2">
-                            <button
-                                onClick={downloadPDF}
-                                className="flex items-center gap-1 px-3 py-1.5 bg-white/5 hover:bg-white/10 text-white/70 rounded-lg text-xs font-medium transition-all"
-                            >
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                                </svg>
-                                Download PDF
-                            </button>
-                            <button
-                                onClick={handleReanalyze}
-                                disabled={isReanalyzing}
-                                className="flex items-center gap-1 px-3 py-1.5 bg-[#d4af37]/20 hover:bg-[#d4af37]/30 text-[#d4af37] rounded-lg text-xs font-medium transition-all disabled:opacity-50"
-                            >
-                                {isReanalyzing ? (
-                                    <>
-                                        <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                        </svg>
-                                        Analyzing...
-                                    </>
-                                ) : (
-                                    <>
-                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
-                                        </svg>
-                                        Re-analyze
-                                    </>
-                                )}
-                            </button>
-                        </div>
-                    </div>
 
-                    <div className="flex-1 overflow-y-auto p-8">
-                        <div className="max-w-4xl mx-auto">
-                            <div className="font-serif text-sm leading-[1.8] text-white/70 whitespace-pre-wrap">
-                                {highlightedText()}
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                        <div className="flex-1 overflow-y-auto p-4 scrollbar-hide" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+                            {clauses.map((clause) => (
+                                <div key={clause.id} className="mb-4 w-full">
+                                    <button
+                                        onClick={() => toggleClauseSelection(clause.id)}
+                                        className={`w-full text-left p-5 rounded-xl transition-all duration-200 border-2 ${selectedClauseIds.includes(clause.id)
+                                            ? 'bg-gradient-to-br from-red-500/20 to-red-600/10 border-red-500/60 shadow-lg shadow-red-500/20'
+                                            : 'bg-[#1a1d2e] border-white/10 hover:border-white/20 hover:bg-[#1e2132]'
+                                            }`}
+                                    >
+                                        <div className="flex items-start gap-4">
+                                            {/* Risk Indicator */}
+                                            <div className="mt-1 flex-shrink-0">
+                                                <div className={`w-2 h-2 rounded-full ${clause.riskLevel === 'high' ? 'bg-red-500' :
+                                                    clause.riskLevel === 'medium' ? 'bg-yellow-500' : 'bg-green-500'
+                                                    }`} />
+                                            </div>
 
-                {/* Right Panel - Negotiator Copilot */}
-                <div className="w-96 bg-[#13151f] border-l border-white/10 flex flex-col h-full">
-                    <div className="p-4 border-b border-white/10 flex items-center justify-between flex-shrink-0">
-                        <h2 className="text-xs font-bold uppercase tracking-wider text-white/70">Negotiator Copilot</h2>
-                    </div>
+                                            {/* Content */}
+                                            <div className="flex-1 min-w-0">
+                                                <div className="flex items-start justify-between gap-3 mb-2">
+                                                    <h3 className="text-sm font-semibold text-white truncate">{clause.title}</h3>
+                                                    {selectedClauseIds.includes(clause.id) && (
+                                                        <svg className="w-5 h-5 text-red-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                                            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"></path>
+                                                        </svg>
+                                                    )}
+                                                </div>
 
-                    {/* Chat Messages */}
-                    <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                        {messages.length === 0 ? (
-                            <p className="text-xs text-white/40 text-center italic">Select clauses or send a message...</p>
-                        ) : (
-                            messages.map((msg, idx) => (
-                                <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                                    <div className={`max-w-[85%] p-3 rounded-xl text-xs leading-relaxed ${msg.role === 'user'
-                                        ? 'bg-[#d4af37] text-[#0a0f1c] rounded-br-none'
-                                        : 'bg-white/5 text-white/90 rounded-bl-none'
-                                        }`}>
-                                        {msg.text}
-                                    </div>
+                                                <p className="text-xs text-white/70 leading-relaxed line-clamp-2 mb-2">
+                                                    {clause.text}
+                                                </p>
+
+                                                {/* Original Text Expandable Section */}
+                                                {clause.original_text && clause.original_text !== "N/A" && (
+                                                    <details className="mt-3 group">
+                                                        <summary className="text-xs text-[#d4af37] cursor-pointer hover:text-[#e5bd3d] font-medium flex items-center gap-2 transition-colors">
+                                                            <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="currentColor" viewBox="0 0 20 20">
+                                                                <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
+                                                            </svg>
+                                                            View Original Clause Text
+                                                        </summary>
+                                                        <div className="mt-3 p-4 bg-black/20 rounded-lg border-l-4 border-[#d4af37]/60">
+                                                            <p className="text-xs text-white/80 leading-relaxed whitespace-pre-wrap">
+                                                                {clause.original_text}
+                                                            </p>
+                                                        </div>
+                                                    </details>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </button>
                                 </div>
-                            ))
-                        )}
-                        <div ref={chatEndRef} />
+                            ))}
+
+                        </div>
                     </div>
 
-                    {/* Proceed Button(s) */}
-                    {selectedClauseIds.length > 0 && (
-                        <div className="px-4 py-3 border-t border-white/10 flex-shrink-0">
-                            <button
-                                onClick={selectedClauseIds.length === 1 ? () => processClause(selectedClauseIds[0]) : processAllClauses}
-                                disabled={isProcessing}
-                                className="w-full bg-blue-500 text-white py-3 rounded-lg text-sm font-semibold hover:bg-blue-600 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
-                            >
-                                {isProcessing ? (
-                                    <>
-                                        <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                        </svg>
-                                        Processing...
-                                    </>
-                                ) : (
-                                    <>
-                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
-                                        </svg>
-                                        {selectedClauseIds.length === 1 ? 'Proceed' : `Proceed with All (${selectedClauseIds.length})`}
-                                    </>
-                                )}
-                            </button>
+                    {/* Right Panel - Editable Contract View (50%) */}
+                    <div className="w-1/2 bg-[#0a0f1c] flex flex-col">
+                        <div className="p-4  border-white/20 flex items-center justify-between flex-shrink-0">
+                            <h2 className="text-base font-semibold text-white">Editable Contract View</h2>
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={downloadPDF}
+                                    className="px-3 py-1.5 bg-white/5 hover:bg-white/10 text-white/70 rounded text-xs transition-all"
+                                >
+                                    Download
+                                </button>
+                                <button
+                                    onClick={handleReanalyze}
+                                    disabled={isReanalyzing}
+                                    className="px-3 py-1.5 bg-[#d4af37]/20 hover:bg-[#d4af37]/30 text-[#d4af37] rounded text-xs transition-all disabled:opacity-50"
+                                >
+                                    Re-analyze
+                                </button>
+                            </div>
                         </div>
-                    )}
 
-                    {/* Chat Input */}
-                    <div className="p-4 border-t border-white/10 flex-shrink-0 bg-[#0a0f1c]">
-                        <div className="flex gap-2">
-                            <textarea
-                                value={chatInput}
-                                onChange={(e) => setChatInput(e.target.value)}
-                                onKeyDown={(e) => {
-                                    if (e.key === 'Enter' && !e.shiftKey) {
-                                        e.preventDefault();
-                                        handleChatSend();
-                                    }
-                                }}
-                                placeholder="Optional custom instructions..."
-                                className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-[#d4af37]/50 text-white placeholder:text-white/30 resize-none"
-                                rows={2}
-                                disabled={isProcessing}
-                            />
-                            <button
-                                onClick={handleChatSend}
-                                disabled={isProcessing || !chatInput.trim()}
-                                className="bg-[#d4af37] text-[#0a0f1c] p-2 rounded-lg hover:bg-[#e5bd3d] transition-all disabled:opacity-50 h-fit"
-                            >
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path>
-                                </svg>
-                            </button>
+                        <div className="flex-1 overflow-y-auto p-6 scrollbar-hide" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+                            <div className="max-w-4xl mx-auto">
+                                <div className="font-serif text-sm leading-[2.2] text-white/70 whitespace-pre-wrap" style={{ wordSpacing: '0.1em' }}>
+                                    {highlightedText()}
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
+
+                {/* Bottom Floating Copilot Agent */}
+                <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-50">
+                    <button
+                        onClick={() => setIsCopilotExpanded(!isCopilotExpanded)}
+                        className="bg-[#d4af37] hover:bg-[#e5bd3d] text-[#0a0f1c] px-6 py-3 rounded-lg shadow-lg flex items-center gap-2 transition-all"
+                    >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path>
+                        </svg>
+                        <span className="font-medium">Negotiator Agent</span>
+                        {selectedClauseIds.length > 0 && (
+                            <span className="bg-black/20 px-2 py-0.5 rounded-full text-xs">{selectedClauseIds.length}</span>
+                        )}
+                        <span className="text-sm">Expand</span>
+                    </button>
+                </div>
+
+                {/* Expanded Copilot Panel */}
+                {isCopilotExpanded && (
+                    <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-[600px] bg-[#13151f] border-t border-x border-white/20 shadow-2xl z-50 flex flex-col max-h-[50vh] animate-in slide-in-from-bottom duration-300">
+                        <div className="p-4 border-b border-white/20 flex items-center justify-between flex-shrink-0">
+                            <h2 className="text-base font-semibold text-white flex items-center gap-2">
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path>
+                                </svg>
+                                Negotiator Agent
+                            </h2>
+                            <button
+                                onClick={() => setIsCopilotExpanded(false)}
+                                className="text-white/50 hover:text-white p-2 hover:bg-white/10 rounded transition-colors">
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path>
+                                </svg>
+                            </button>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-hide" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+                            {messages.length === 0 ? (
+                                <p className="text-xs text-white/40 text-center italic">Select clauses to begin negotiation...</p>
+                            ) : (
+                                messages.map((msg, idx) => (
+                                    <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} `}>
+                                        <div className={`max - w - [85 %] p - 3 rounded - xl text - xs leading - relaxed ${msg.role === 'user'
+                                            ? 'bg-[#3b82f6] text-white rounded-br-none'
+                                            : 'bg-white/5 text-white/90 rounded-bl-none'
+                                            } `}>
+                                            {msg.text}
+                                        </div>
+                                    </div>
+                                ))
+                            )}
+                            <div ref={chatEndRef} />
+                        </div>
+
+                        {selectedClauseIds.length > 0 && (
+                            <div className="px-4 py-3 border-t border-white/20 flex-shrink-0">
+                                <button
+                                    onClick={selectedClauseIds.length === 1 ? () => processClause(selectedClauseIds[0]) : processAllClauses}
+                                    disabled={isProcessing}
+                                    className="w-full bg-[#3b82f6] hover:bg-[#2563eb] text-white py-3 rounded-lg text-sm font-semibold transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                                >
+                                    {isProcessing ? (<>Processing...</>) : (<>Negotiate {selectedClauseIds.length === 1 ? 'Clause' : `${selectedClauseIds.length} Clauses`}</>)}
+                                </button>
+                            </div>
+                        )}
+
+                        <div className="p-4 border-t border-white/20 flex-shrink-0">
+                            <div className="flex gap-2">
+                                <textarea
+                                    value={chatInput}
+                                    onChange={(e) => setChatInput(e.target.value)}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter' && !e.shiftKey) {
+                                            e.preventDefault();
+                                            handleChatSend();
+                                        }
+                                    }}
+                                    placeholder="Add custom instructions..."
+                                    className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-[#3b82f6] text-white placeholder:text-white/30 resize-none"
+                                    rows={2}
+                                    disabled={isProcessing}
+                                />
+                                <button
+                                    onClick={handleChatSend}
+                                    disabled={isProcessing || !chatInput.trim()}
+                                    className="bg-[#3b82f6] hover:bg-[#2563eb] text-white p-2 rounded-lg transition-all disabled:opacity-50 h-fit"
+                                >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* Mobile/Tablet View - visible on md and below */}
@@ -614,28 +652,44 @@ export default function NegotiationPage() {
                     {activeTab === 'clauses' && (
                         <div className="h-full overflow-y-auto p-4">
                             {clauses.map((clause) => (
-                                <div key={clause.id} className="mb-3">
+                                <div key={clause.id} className="mb-4 w-full">
                                     <button
                                         onClick={() => toggleClauseSelection(clause.id)}
-                                        className={`w-full flex items-center gap-3 p-4 rounded-lg transition-all ${selectedClauseIds.includes(clause.id) ? 'bg-red-500/20 border-2 border-red-500/50' : 'bg-white/5 border-2 border-transparent'
+                                        className={`w-full p-5 rounded-xl transition-all duration-200 border-2 ${selectedClauseIds.includes(clause.id)
+                                            ? 'bg-gradient-to-br from-red-500/20 to-red-600/10 border-red-500/60 shadow-lg shadow-red-500/20'
+                                            : 'bg-[#1a1d2e] border-white/10 hover:border-white/20'
                                             }`}
                                     >
-                                        <div className={`w-3 h-3 rounded-full flex-shrink-0 ${getRiskColor(clause.riskLevel)}`}></div>
-                                        <span className="flex-1 text-left text-sm text-white/90">{clause.id}. {clause.title}</span>
-                                        {selectedClauseIds.includes(clause.id) && (
-                                            <svg className="w-5 h-5 text-red-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                                                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"></path>
-                                            </svg>
-                                        )}
+                                        <div className="flex items-start gap-4">
+                                            {/* Risk Indicator */}
+                                            <div className="mt-1 flex-shrink-0">
+                                                <div className={`w-2 h-2 rounded-full ${getRiskColor(clause.riskLevel)}`} />
+                                            </div>
+
+                                            {/* Content */}
+                                            <div className="flex-1 min-w-0 text-left">
+                                                <div className="flex items-start justify-between gap-2 mb-2">
+                                                    <h3 className="text-sm font-semibold text-white line-clamp-2">{clause.title}</h3>
+                                                    {selectedClauseIds.includes(clause.id) && (
+                                                        <svg className="w-5 h-5 text-red-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                                            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"></path>
+                                                        </svg>
+                                                    )}
+                                                </div>
+                                                <p className="text-xs text-white/70 leading-relaxed line-clamp-2">
+                                                    {clause.text}
+                                                </p>
+                                            </div>
+                                        </div>
                                     </button>
 
                                     {/* Individual Negotiate Button */}
                                     <button
                                         onClick={() => toggleClauseSelection(clause.id)}
-                                        className={`w-full mt-2 ${selectedClauseIds.includes(clause.id)
-                                            ? 'bg-[#d4af37] text-[#0a0f1c] border-2 border-[#d4af37]'
-                                            : 'bg-blue-500/20 border-2 border-blue-500/50 text-blue-400'
-                                            } py-3 px-4 rounded-lg text-sm font-semibold hover:opacity-80 transition-all flex items-center justify-center gap-2`}
+                                        className={`w-full mt-3 py-3 px-4 rounded-xl text-sm font-semibold transition-all duration-200 flex items-center justify-center gap-2 border-2 ${selectedClauseIds.includes(clause.id)
+                                            ? 'bg-gradient-to-r from-[#d4af37] to-[#e5bd3d] text-[#0a0f1c] border-[#d4af37] shadow-lg shadow-[#d4af37]/30'
+                                            : 'bg-blue-500/10 border-blue-500/30 text-blue-400 hover:bg-blue-500/20 hover:border-blue-500/50'
+                                            }`}
                                     >
                                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
@@ -702,11 +756,11 @@ export default function NegotiationPage() {
                                     <p className="text-xs text-white/40 text-center italic">Select clauses or send a message...</p>
                                 ) : (
                                     messages.map((msg, idx) => (
-                                        <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                                            <div className={`max-w-[85%] p-3 rounded-xl text-sm leading-relaxed ${msg.role === 'user'
+                                        <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} `}>
+                                            <div className={`max - w - [85 %] p - 3 rounded - xl text - sm leading - relaxed ${msg.role === 'user'
                                                 ? 'bg-[#d4af37] text-[#0a0f1c] rounded-br-none'
                                                 : 'bg-white/5 text-white/90 rounded-bl-none'
-                                                }`}>
+                                                } `}>
                                                 {msg.text}
                                             </div>
                                         </div>
@@ -736,7 +790,7 @@ export default function NegotiationPage() {
                                                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
                                                 </svg>
-                                                {selectedClauseIds.length === 1 ? 'Proceed' : `Proceed with All (${selectedClauseIds.length})`}
+                                                {selectedClauseIds.length === 1 ? 'Proceed' : `Proceed with All(${selectedClauseIds.length})`}
                                             </>
                                         )}
                                     </button>
@@ -780,8 +834,8 @@ export default function NegotiationPage() {
                     <div className="flex items-center justify-around">
                         <button
                             onClick={() => setActiveTab('clauses')}
-                            className={`flex-1 flex flex-col items-center gap-1 py-3 transition-colors ${activeTab === 'clauses' ? 'text-[#d4af37]' : 'text-white/40'
-                                }`}
+                            className={`flex - 1 flex flex - col items - center gap - 1 py - 3 transition - colors ${activeTab === 'clauses' ? 'text-[#d4af37]' : 'text-white/40'
+                                } `}
                         >
                             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
@@ -791,8 +845,8 @@ export default function NegotiationPage() {
 
                         <button
                             onClick={() => setActiveTab('contract')}
-                            className={`flex-1 flex flex-col items-center gap-1 py-3 transition-colors ${activeTab === 'contract' ? 'text-[#d4af37]' : 'text-white/40'
-                                }`}
+                            className={`flex - 1 flex flex - col items - center gap - 1 py - 3 transition - colors ${activeTab === 'contract' ? 'text-[#d4af37]' : 'text-white/40'
+                                } `}
                         >
                             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
@@ -802,8 +856,8 @@ export default function NegotiationPage() {
 
                         <button
                             onClick={() => setActiveTab('copilot')}
-                            className={`flex-1 flex flex-col items-center gap-1 py-3 transition-colors relative ${activeTab === 'copilot' ? 'text-[#d4af37]' : 'text-white/40'
-                                }`}
+                            className={`flex - 1 flex flex - col items - center gap - 1 py - 3 transition - colors relative ${activeTab === 'copilot' ? 'text-[#d4af37]' : 'text-white/40'
+                                } `}
                         >
                             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path>

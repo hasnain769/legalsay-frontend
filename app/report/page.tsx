@@ -3,52 +3,23 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AnalysisResult } from '@/lib/api';
+import { useContractStore } from '@/lib/contract-store';
 import ReportDashboard from '@/components/ReportDashboard';
-import { fileStore } from '@/lib/store';
 
 export default function ReportPage() {
     const router = useRouter();
     const [data, setData] = useState<AnalysisResult | null>(null);
-    const [originalFile, setOriginalFile] = useState<File | null>(null); // We can't easily get the File object back from localStorage across pages without re-upload or context.
-    // Actually, in a real app, we'd use a Context or State Manager.
-    // For this MVP, we are stuck. The File object cannot be stored in localStorage.
-    // However, the user *just* uploaded it in the previous step.
-    // If we want to support Redlining, we need the file.
 
-    // HACK: For the demo, we will assume the user is still in the same session and we might have passed it via state?
-    // Next.js router state is tricky.
-
-    // Alternative: The `analyzeContract` in `page.tsx` could store the file in a global context?
-    // Or, we can't do it easily without a backend storage (which we have but didn't fully hook up for file persistence yet).
-
-    // Let's check `page.tsx`. It calls `analyzeContract` and then pushes to `/report`.
-    // The file is lost.
-
-    // FIX: We need to persist the file. 
-    // Since we don't have a backend "File ID" yet (just raw analysis), we can't download it from backend.
-    // We need to upload it again? No, that's bad UX.
-
-    // Let's assume for this "Agentic" demo, we will mock the file persistence or use a global variable (unreliable but works for single-page demo).
-    // Better: Use a React Context.
-
-    // For now, I'll add a placeholder comment. The user needs to know this limitation.
-    // Wait, I can use a simple client-side singleton/store for the session.
-
-    const [jurisdiction, setJurisdiction] = useState("United States (General)");
+    // Get data from Zustand store
+    const { analysisResult, file } = useContractStore();
 
     useEffect(() => {
-        // Load analysis
-        const storedData = localStorage.getItem('analysisResult');
-        if (storedData) {
-            setData(JSON.parse(storedData));
+        if (analysisResult) {
+            setData(analysisResult);
         } else {
             router.push('/'); // Redirect if no data
         }
-
-        // Load file from store
-        setOriginalFile(fileStore.file);
-        setJurisdiction(fileStore.jurisdiction);
-    }, []);
+    }, [analysisResult, router]);
 
     if (!data) {
         return (
@@ -66,7 +37,7 @@ export default function ReportPage() {
             <div className="max-w-7xl mx-auto">
                 <header className="flex items-center justify-between mb-12">
                     <div className="flex items-center gap-4">
-                        <img src="/logo.png" alt="LegalSay" className="h-10 w-auto" />
+                        <img src="/logo.png" alt="LegalSay" className="h-12 w-12" />
                         <div className="h-6 w-px bg-white/10"></div>
                         <span className="text-sm font-medium text-muted-foreground">Report</span>
                     </div>
@@ -75,7 +46,7 @@ export default function ReportPage() {
                     </button>
                 </header>
 
-                <ReportDashboard data={data} originalFile={originalFile} jurisdiction={jurisdiction} />
+                <ReportDashboard data={data} originalFile={file} jurisdiction={data.jurisdiction || "Not Specified"} />
             </div>
         </div>
     );

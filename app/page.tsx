@@ -2,7 +2,9 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { analyzeContract } from '@/lib/api';
+import { analyzeContract, extractText } from '@/lib/api';
+import { useContractStore } from '@/lib/contract-store';
+import { cleanPdfText } from '@/lib/textUtils';
 import Header from '@/components/Header';
 import { handleError, logError } from '@/lib/errorHandler';
 import { showToast } from '@/components/Toast';
@@ -14,18 +16,9 @@ export default function Home() {
   const [text, setText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [jurisdiction, setJurisdiction] = useState("United States (General)");
 
-  const jurisdictions = [
-    "United States (General)",
-    "California",
-    "New York",
-    "Delaware",
-    "United Kingdom",
-    "European Union",
-    "United Arab Emirates",
-    "Singapore"
-  ];
+  // Zustand store
+  const { setContract, setAnalysis } = useContractStore();
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -56,18 +49,27 @@ export default function Home() {
 
       showToast('🔍 Our AI is diving deep into your contract...', 'info');
 
-      // Pass jurisdiction to the analyzeContract function
-      const result = await analyzeContract(fileToUpload!, jurisdiction);
+      // Extract contract content
+      let contractContent = await extractText(fileToUpload!);
 
-      // Store in global store for Report Page
-      // @ts-ignore
-      import('@/lib/store').then(mod => {
-        mod.fileStore.file = fileToUpload;
-        mod.fileStore.jurisdiction = jurisdiction;
-      });
+      // Clean PDF text (fixes one-word-per-line issue)
+      contractContent = cleanPdfText(contractContent);
 
-      // Store result in localStorage for the report page
-      localStorage.setItem('analysisResult', JSON.stringify(result));
+      // Store file and content in Zustand
+      setContract(fileToUpload!, contractContent);
+
+      // Analyze the contract
+      const result = await analyzeContract(fileToUpload!);
+
+      // Check if document is irrelevant
+      if (result.contract_type === 'Irrelevant') {
+        showToast('⚠️ ' + result.plain_english_summary, 'warning');
+        setError(result.plain_english_summary);
+        return; // Stop here, don't navigate
+      }
+
+      // Store analysis result in Zustand
+      setAnalysis(result);
 
       showToast('✨ Analysis complete! Your insights are ready.', 'success');
 
@@ -76,7 +78,7 @@ export default function Home() {
         router.push('/report');
       }, 500);
     } catch (err: any) {
-      logError('Analysis Error', err, { jurisdiction });
+      logError('Analysis Error', err);
       const errorMessage = handleError(err, 'Contract Analysis', false);
       setError(errorMessage);
     } finally {
@@ -114,27 +116,6 @@ export default function Home() {
             <p className="text-xl text-muted-foreground max-w-xl mx-auto leading-relaxed">
               AI-powered contract analysis. Instant clarity, reduced risk, and actionable insights.
             </p>
-
-            {/* Jurisdiction Selector */}
-            <div className="pt-4 flex justify-center">
-              <div className="relative inline-block text-left">
-                <select
-                  value={jurisdiction}
-                  onChange={(e) => setJurisdiction(e.target.value)}
-                  className="appearance-none bg-white/5 border border-white/10 text-foreground py-2 pl-4 pr-10 rounded-full focus:outline-none focus:ring-2 focus:ring-secondary/50 focus:border-secondary transition-all cursor-pointer hover:bg-white/10 text-sm font-medium"
-                >
-                  {jurisdictions.map((j) => (
-                    <option key={j} value={j} className="bg-card text-foreground">{j}</option>
-                  ))}
-                </select>
-                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-muted-foreground">
-                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
-                </div>
-                <div className="absolute -top-6 left-0 w-full text-center text-[10px] text-muted-foreground uppercase tracking-widest font-semibold">
-                  Governing Law
-                </div>
-              </div>
-            </div>
           </div>
 
           {/* Analysis Card */}
